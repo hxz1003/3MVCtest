@@ -1,0 +1,15 @@
+# MATLAB 数据集与实验产物
+3AMVC-main/dataset/*.mat
+3AMVC-main/res/
+
+# MATLAB 临时文件
+*.asv
+*.autosave
+*.m~
+
+# 操作系统与编辑器文件
+Thumbs.db
+Desktop.ini
+
+# 临时远端副本
+push_repo/
