@@ -1,12 +1,13 @@
-%% GRID_SEARCH_MFEAT_2VIEWS 对 MFeat_2Views 执行联合加权融合网格搜索
+%% GRID_SEARCH_CALTECH256 对 Caltech256 执行联合加权融合网格搜索
 % 功能简介：
-% 默认对 dataset/MFeat_2Views.mat 数据集搜索 beta、lambda、rho 和 tauS，
-% 并以 ACC 最大作为最优参数组合选择标准。脚本沿用当前项目的自动标签解析、
-% 重复实验和详细日志输出风格，便于直接复现实验并进一步做局部细化搜索。
+% 默认对 dataset/Caltech256.mat 数据集搜索 beta、lambda、rho 和 tauS，
+% 并以 ACC 最大作为最优参数组合选择标准。考虑到 Caltech256 是新接入数据，
+% 本脚本在不修改 .mat 文件本身的前提下，支持在内存中完成标签字段适配、
+% 视图方向修正、可选移除 clutter 类别以及可选按类限样。
 %
 % 输入参数说明：
-% 本脚本无函数输入。请直接修改“用户可配置参数”区域中的搜索网格、
-% 随机种子和重复次数。
+% 本脚本无函数输入。可直接修改“用户可配置参数”区域中的搜索网格、随机种子
+% 和 adjustmentOptions；也可在命令行预先定义同名变量后再运行脚本，以覆盖默认值。
 %
 % 输出参数说明：
 % 运行结束后，工作区将生成：
@@ -14,7 +15,7 @@
 %   searchTable   - searchRecords 对应的结果表
 %   comboTable    - 参数组合汇总结果表
 %   bestResult    - ACC 最优的搜索结果结构体
-%   datasetInfo   - 当前数据集的信息结构体
+%   datasetInfo   - 当前数据集及内存级调整信息结构体
 %
 % 维度说明：
 % X 为 v x 1 或 1 x v 的 cell，每个视图为 n x d_v；
@@ -22,43 +23,71 @@
 %
 % 注意事项：
 % 1. 该脚本默认启用 3.Y Quality-and-Alignment Aware Weighted Anchor Fusion。
-% 2. 默认搜索网格以 demo.m 中 beta=100、lambda=1e4 为中心做首轮粗搜索。
-% 3. 每次搜索都会输出每个视图的质量分数、对齐残差、联合得分和融合权重。
+% 2. Caltech256 规模较大，默认搜索网格为首轮粗搜索，repeatNum 默认设为 1。
+% 3. 默认会在内存中移除疑似 clutter 类别；若需保留全部 257 类，可将
+%    adjustmentOptions.removeClutterClass 改为 false。
 %
 % See also algo_qp, aligned, Neighbor, myNMIACCwithmean
 
-clear;
+clearvars -except datasetFile betaList lambdaList rhoList tauSList epsilonValue ...
+    repeatNum baseSeed labelFieldCandidates adjustmentOptions
 clc;
 warning off;
 
 %% 用户可配置参数
-datasetFile = 'MFeat_2Views.mat';
-% 以 demo.m 的默认参数为中心做首轮粗搜索，便于后续围绕最优点继续细化。
-betaList = [290, 300, 320, 310, 280];
-lambdaList = [20000 ,1e4];
-rhoList = [0.76, 0.78, 0.8];
-tauSList = [3.8, 4, 4.2];
-epsilonValue = 1e-8;
-repeatNum = 1;
-baseSeed = 1;
-labelFieldCandidates = {'Y', 'y', 'gt', 'truth', 'label', 'labels'};
+if ~exist('datasetFile', 'var') || isempty(datasetFile)
+    datasetFile = 'Caltech256.mat';
+end
+if ~exist('betaList', 'var') || isempty(betaList)
+    % Caltech256 规模较大，默认先围绕 demo.m 的 beta=100 做粗搜索。
+    betaList = [80, 100, 120];
+end
+if ~exist('lambdaList', 'var') || isempty(lambdaList)
+    lambdaList = [5e3, 1e4, 2e4];
+end
+if ~exist('rhoList', 'var') || isempty(rhoList)
+    rhoList = [0.3, 0.5, 0.7];
+end
+if ~exist('tauSList', 'var') || isempty(tauSList)
+    tauSList = [0.5, 1];
+end
+if ~exist('epsilonValue', 'var') || isempty(epsilonValue)
+    epsilonValue = 1e-8;
+end
+if ~exist('repeatNum', 'var') || isempty(repeatNum)
+    repeatNum = 1;
+end
+if ~exist('baseSeed', 'var') || isempty(baseSeed)
+    baseSeed = 1;
+end
+if ~exist('labelFieldCandidates', 'var') || isempty(labelFieldCandidates)
+    labelFieldCandidates = {'Y', 'y', 'gnd', 'gt', 'truth', 'label', 'labels'};
+end
+if ~exist('adjustmentOptions', 'var') || isempty(adjustmentOptions)
+    adjustmentOptions = struct();
+end
 
 %% 环境初始化
 projectRoot = fileparts(mfilename('fullpath'));
 datasetDir = fullfile(projectRoot, 'dataset');
 addpath(genpath(projectRoot));
 
+adjustmentOptions = normalize_adjustment_options(adjustmentOptions);
 validate_search_config(datasetFile, betaList, lambdaList, rhoList, tauSList, ...
-    epsilonValue, repeatNum, baseSeed, labelFieldCandidates);
-[X, Y, datasetInfo] = load_multiview_dataset(datasetDir, datasetFile, labelFieldCandidates);
+    epsilonValue, repeatNum, baseSeed, labelFieldCandidates, adjustmentOptions);
+[X, Y, datasetInfo] = load_multiview_dataset_with_adjustment(datasetDir, datasetFile, ...
+    labelFieldCandidates, adjustmentOptions);
 k = datasetInfo.classNum;
 viewNum = datasetInfo.viewNum;
 metricNames = {'ACC', 'NMI', 'Purity', 'Fscore', 'Precision', 'Recall', 'AR', 'Entropy'};
 totalSearchNum = numel(betaList) * numel(lambdaList) * numel(rhoList) * numel(tauSList) * repeatNum;
 
-fprintf('开始网格搜索：数据集=%s | 标签字段=%s | 样本数=%d | 视图数=%d | 类别数=%d\n', ...
-    datasetInfo.datasetFile, datasetInfo.labelField, datasetInfo.sampleNum, ...
+fprintf('开始网格搜索：数据集=%s | 数据集别名=%s | 标签字段=%s\n', ...
+    datasetInfo.datasetFile, datasetInfo.datasetName, datasetInfo.labelField);
+fprintf('原始样本数=%d | 原始类别数=%d | 调整后样本数=%d | 调整后视图数=%d | 调整后类别数=%d\n', ...
+    datasetInfo.originalSampleNum, datasetInfo.originalClassNum, datasetInfo.sampleNum, ...
     datasetInfo.viewNum, datasetInfo.classNum);
+fprintf('内存级数据调整：%s\n', datasetInfo.adjustmentSummary);
 fprintf('搜索网格：beta=%s | lambda=%s | rho=%s | tauS=%s | repeatNum=%d | baseSeed=%d\n', ...
     mat2str(betaList), mat2str(lambdaList), mat2str(rhoList), ...
     mat2str(tauSList), repeatNum, baseSeed);
@@ -183,14 +212,15 @@ for ib = 1:numel(betaList)
     end
 end
 
-searchTable = struct2table(searchRecords);
-comboTable = struct2table(comboSummary);
+searchTable = struct2table(searchRecords, 'AsArray', true);
+comboTable = struct2table(comboSummary, 'AsArray', true);
 
 if isfinite(bestResult.ACC)
     fprintf(['\n最优参数组合：beta=%g | lambda=%g | rho=%.2f | tauS=%g | ' ...
         'ACC=%.6f | NMI=%.6f | Time=%.2fs | seed=%d\n'], ...
         bestResult.beta, bestResult.lambda, bestResult.rho, bestResult.tauS, ...
         bestResult.ACC, bestResult.NMI, bestResult.elapsedTime, bestResult.seed);
+    fprintf('数据调整摘要：%s\n', bestResult.adjustmentSummary);
     fprintf('对应视图质量分数：%s\n', bestResult.qualityScoresText);
     fprintf('对应对齐残差：%s\n', bestResult.alignmentErrorsText);
     fprintf('对应联合得分：%s\n', bestResult.jointScoresText);
@@ -201,6 +231,31 @@ if isfinite(bestResult.ACC)
         bestResult.Recall, bestResult.AR, bestResult.Entropy);
 else
     warning('所有参数组合均搜索失败，请检查数据集、随机种子或搜索网格范围。');
+end
+
+
+function adjustmentOptions = normalize_adjustment_options(adjustmentOptions)
+% NORMALIZE_ADJUSTMENT_OPTIONS 规范化 Caltech256 的内存级数据调整配置。
+
+if ~isstruct(adjustmentOptions)
+    error('adjustmentOptions 必须是结构体。');
+end
+
+adjustmentOptions = ensure_default_field(adjustmentOptions, 'removeClutterClass', true);
+adjustmentOptions = ensure_default_field(adjustmentOptions, 'selectedLabels', []);
+adjustmentOptions = ensure_default_field(adjustmentOptions, 'maxSamplesPerClass', []);
+adjustmentOptions = ensure_default_field(adjustmentOptions, 'adjustmentSeed', 1);
+adjustmentOptions = ensure_default_field(adjustmentOptions, 'remapLabels', true);
+adjustmentOptions = ensure_default_field(adjustmentOptions, 'autoTransposeViews', true);
+end
+
+
+function structValue = ensure_default_field(structValue, fieldName, defaultValue)
+% ENSURE_DEFAULT_FIELD 为缺失字段补齐默认值。
+
+if ~isfield(structValue, fieldName) || isempty(structValue.(fieldName))
+    structValue.(fieldName) = defaultValue;
+end
 end
 
 
@@ -222,8 +277,9 @@ fusionInfo.epsilon = epsilonValue;
 end
 
 
-function [X, Y, datasetInfo] = load_multiview_dataset(datasetDir, datasetFile, labelFieldCandidates)
-% LOAD_MULTIVIEW_DATASET 加载并校验多视图数据集。
+function [X, Y, datasetInfo] = load_multiview_dataset_with_adjustment(datasetDir, datasetFile, ...
+    labelFieldCandidates, adjustmentOptions)
+% LOAD_MULTIVIEW_DATASET_WITH_ADJUSTMENT 加载并在内存中适配多视图数据。
 
 datasetPath = fullfile(datasetDir, datasetFile);
 if exist(datasetPath, 'file') ~= 2
@@ -235,6 +291,7 @@ if ~isfield(datasetStruct, 'X')
     error('数据集 %s 中缺少变量 X，无法继续运行。', datasetFile);
 end
 
+datasetName = resolve_dataset_name(datasetStruct, datasetFile);
 X = datasetStruct.X;
 if ~iscell(X) || isempty(X)
     error('数据集 %s 中的 X 必须是非空 cell 数组。', datasetFile);
@@ -245,20 +302,198 @@ labelField = resolve_label_field(datasetStruct, labelFieldCandidates, datasetFil
 Y = datasetStruct.(labelField);
 Y = double(Y(:));
 
+[X, orientationSummary] = maybe_transpose_views(X, Y, datasetFile, adjustmentOptions.autoTransposeViews);
+[X, Y] = validate_multiview_data(X, Y, datasetFile);
+
+originalSampleNum = numel(Y);
+originalClassNum = numel(unique(Y));
+
+[X, Y, adjustmentSummary] = apply_dataset_adjustment(X, Y, datasetFile, adjustmentOptions, orientationSummary);
 [X, Y] = validate_multiview_data(X, Y, datasetFile);
 
 datasetInfo = struct();
 datasetInfo.datasetFile = datasetFile;
+datasetInfo.datasetName = datasetName;
 datasetInfo.datasetPath = datasetPath;
 datasetInfo.labelField = labelField;
+datasetInfo.originalSampleNum = originalSampleNum;
+datasetInfo.originalClassNum = originalClassNum;
 datasetInfo.sampleNum = numel(Y);
 datasetInfo.viewNum = numel(X);
 datasetInfo.classNum = numel(unique(Y));
+datasetInfo.adjustmentSummary = adjustmentSummary;
+end
+
+
+function datasetName = resolve_dataset_name(datasetStruct, datasetFile)
+% RESOLVE_DATASET_NAME 解析数据集别名，便于日志输出。
+
+datasetName = erase(datasetFile, '.mat');
+if isfield(datasetStruct, 'data_name') && ~isempty(datasetStruct.data_name)
+    rawName = datasetStruct.data_name;
+    if iscell(rawName) && ~isempty(rawName) && (ischar(rawName{1}) || isstring(rawName{1}))
+        datasetName = char(string(rawName{1}));
+    elseif ischar(rawName) || (isstring(rawName) && isscalar(rawName))
+        datasetName = char(string(rawName));
+    end
+end
+end
+
+
+function [X, summaryText] = maybe_transpose_views(X, Y, datasetFile, autoTransposeViews)
+% MAYBE_TRANSPOSE_VIEWS 若视图写成 d x n，则在内存中自动转为 n x d。
+
+if ~autoTransposeViews
+    summaryText = '未启用视图自动转置检查';
+    return;
+end
+
+sampleNum = numel(Y);
+summaryParts = cell(numel(X), 1);
+summaryCount = 0;
+for iv = 1:numel(X)
+    Xi = X{iv};
+    if ~(isnumeric(Xi) || islogical(Xi))
+        error('数据集 %s 的第 %d 个视图必须是数值矩阵。', datasetFile, iv);
+    end
+    if size(Xi, 1) ~= sampleNum && size(Xi, 2) == sampleNum
+        X{iv} = Xi';
+        summaryCount = summaryCount + 1;
+        summaryParts{summaryCount} = sprintf('第 %d 个视图已在内存中由 %d x %d 转为 %d x %d', ...
+            iv, size(Xi, 1), size(Xi, 2), size(X{iv}, 1), size(X{iv}, 2));
+    end
+end
+
+if summaryCount == 0
+    summaryText = '未触发视图方向修正';
+else
+    summaryText = strjoin(summaryParts(1:summaryCount), '；');
+end
+end
+
+
+function [X, Y, summaryText] = apply_dataset_adjustment(X, Y, datasetFile, adjustmentOptions, orientationSummary)
+% APPLY_DATASET_ADJUSTMENT 在内存中执行 Caltech256 适配，不改动原始 .mat 文件。
+
+summaryParts = cell(5, 1);
+summaryCount = 0;
+if ~isempty(orientationSummary)
+    summaryCount = summaryCount + 1;
+    summaryParts{summaryCount} = orientationSummary;
+end
+
+currentLabels = unique(Y);
+if adjustmentOptions.removeClutterClass && contains(lower(datasetFile), 'caltech256') ...
+        && numel(currentLabels) == 257
+    clutterLabel = max(currentLabels);
+    keepMask = (Y ~= clutterLabel);
+    if ~any(keepMask)
+        error('移除疑似 clutter 类别后无剩余样本，请检查标签设置。');
+    end
+    X = subset_multiview_data(X, keepMask);
+    Y = Y(keepMask);
+    summaryCount = summaryCount + 1;
+    summaryParts{summaryCount} = sprintf('已在内存中移除疑似 clutter 类别(label=%d)', clutterLabel);
+end
+
+if ~isempty(adjustmentOptions.selectedLabels)
+    selectedLabels = unique(double(adjustmentOptions.selectedLabels(:)));
+    keepMask = ismember(Y, selectedLabels);
+    if ~any(keepMask)
+        error('selectedLabels 未命中任何样本，请检查 adjustmentOptions.selectedLabels。');
+    end
+    X = subset_multiview_data(X, keepMask);
+    Y = Y(keepMask);
+    summaryCount = summaryCount + 1;
+    summaryParts{summaryCount} = sprintf('已在内存中筛选指定标签，共保留 %d 个标签', numel(unique(Y)));
+end
+
+if ~isempty(adjustmentOptions.maxSamplesPerClass)
+    [X, Y, sampledClassCount] = limit_samples_per_class(X, Y, adjustmentOptions.maxSamplesPerClass, ...
+        adjustmentOptions.adjustmentSeed);
+    summaryCount = summaryCount + 1;
+    summaryParts{summaryCount} = sprintf('已按类限样，每类最多保留 %d 个样本，当前类别数=%d', ...
+        adjustmentOptions.maxSamplesPerClass, sampledClassCount);
+end
+
+if adjustmentOptions.remapLabels
+    Y = remap_labels_to_consecutive(Y);
+    summaryCount = summaryCount + 1;
+    summaryParts{summaryCount} = '已将标签重映射为从 1 开始的连续整数';
+end
+
+if summaryCount == 0
+    summaryText = '未做内存级数据调整';
+else
+    summaryText = strjoin(summaryParts(1:summaryCount), '；');
+end
+end
+
+
+function X = subset_multiview_data(X, mask)
+% SUBSET_MULTIVIEW_DATA 用统一逻辑对子集样本做视图筛选。
+
+mask = logical(mask(:));
+for iv = 1:numel(X)
+    X{iv} = X{iv}(mask, :);
+end
+end
+
+
+function [X, Y, classCount] = limit_samples_per_class(X, Y, maxSamplesPerClass, adjustmentSeed)
+% LIMIT_SAMPLES_PER_CLASS 在内存中对每类样本数做上限裁剪。
+
+if ~isscalar(maxSamplesPerClass) || ~isnumeric(maxSamplesPerClass) || ...
+        ~isfinite(maxSamplesPerClass) || maxSamplesPerClass < 1 || ...
+        maxSamplesPerClass ~= floor(maxSamplesPerClass)
+    error('adjustmentOptions.maxSamplesPerClass 必须是正整数。');
+end
+if ~isscalar(adjustmentSeed) || ~isnumeric(adjustmentSeed) || ...
+        ~isfinite(adjustmentSeed) || adjustmentSeed ~= floor(adjustmentSeed)
+    error('adjustmentOptions.adjustmentSeed 必须是有限整数。');
+end
+
+prevRngState = rng;
+cleanupObj = onCleanup(@() rng(prevRngState));
+rng(adjustmentSeed, 'twister');
+
+classLabels = unique(Y);
+selectedIndexCell = cell(numel(classLabels), 1);
+for ic = 1:numel(classLabels)
+    classIndex = find(Y == classLabels(ic));
+    if numel(classIndex) > maxSamplesPerClass
+        sampledPos = randperm(numel(classIndex), maxSamplesPerClass);
+        classIndex = classIndex(sort(sampledPos));
+    end
+    selectedIndexCell{ic} = classIndex(:);
+end
+selectedIndex = vertcat(selectedIndexCell{:});
+
+clear cleanupObj;
+selectedIndex = sort(selectedIndex);
+
+keepMask = false(numel(Y), 1);
+keepMask(selectedIndex) = true;
+X = subset_multiview_data(X, keepMask);
+Y = Y(keepMask);
+classCount = numel(unique(Y));
+end
+
+
+function Y = remap_labels_to_consecutive(Y)
+% REMAP_LABELS_TO_CONSECUTIVE 将标签压缩为从 1 开始的连续整数。
+
+uniqueLabels = unique(Y);
+remappedY = zeros(size(Y));
+for i = 1:numel(uniqueLabels)
+    remappedY(Y == uniqueLabels(i)) = i;
+end
+Y = remappedY;
 end
 
 
 function validate_search_config(datasetFile, betaList, lambdaList, rhoList, tauSList, ...
-    epsilonValue, repeatNum, baseSeed, labelFieldCandidates)
+    epsilonValue, repeatNum, baseSeed, labelFieldCandidates, adjustmentOptions)
 % VALIDATE_SEARCH_CONFIG 校验网格搜索配置参数。
 
 if ~(ischar(datasetFile) || (isstring(datasetFile) && isscalar(datasetFile)))
@@ -288,6 +523,9 @@ end
 if ~iscell(labelFieldCandidates) || isempty(labelFieldCandidates)
     error('labelFieldCandidates 必须是非空 cell 数组。');
 end
+if ~isstruct(adjustmentOptions)
+    error('adjustmentOptions 必须是结构体。');
+end
 end
 
 
@@ -307,7 +545,7 @@ end
 
 fieldList = fieldnames(datasetStruct);
 if isfield(datasetStruct, 'X') && iscell(datasetStruct.X) && ~isempty(datasetStruct.X)
-    sampleNum = size(datasetStruct.X{1}, 1);
+    sampleNum = max(size(datasetStruct.X{1}));
     for i = 1:numel(fieldList)
         currentField = fieldList{i};
         if strcmp(currentField, 'X')
@@ -367,10 +605,14 @@ function record = create_empty_record(metricNames, viewNum)
 
 record = struct( ...
     'datasetFile', '', ...
+    'datasetName', '', ...
     'labelField', '', ...
+    'originalSampleNum', NaN, ...
+    'originalClassNum', NaN, ...
     'sampleNum', NaN, ...
     'viewNum', viewNum, ...
     'classNum', NaN, ...
+    'adjustmentSummary', '', ...
     'beta', NaN, ...
     'lambda', NaN, ...
     'rho', NaN, ...
@@ -415,9 +657,13 @@ function record = build_search_record(datasetInfo, metricNames, viewNum, beta, l
 
 record = create_empty_record(metricNames, viewNum);
 record.datasetFile = datasetInfo.datasetFile;
+record.datasetName = datasetInfo.datasetName;
 record.labelField = datasetInfo.labelField;
+record.originalSampleNum = datasetInfo.originalSampleNum;
+record.originalClassNum = datasetInfo.originalClassNum;
 record.sampleNum = datasetInfo.sampleNum;
 record.classNum = datasetInfo.classNum;
+record.adjustmentSummary = datasetInfo.adjustmentSummary;
 record.beta = beta;
 record.lambda = lambda;
 record.rho = rho;
