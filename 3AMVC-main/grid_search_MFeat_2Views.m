@@ -1,11 +1,11 @@
- %% GRID_SEARCH_REUTERS1200 对 3.Y 联合加权融合执行网格搜索
+%% GRID_SEARCH_MFEAT_2VIEWS 对 MFeat_2Views 执行联合加权融合网格搜索
 % 功能简介：
-% 默认对 dataset/Reuters-1200.mat 数据集搜索 beta、lambda、rho 和 tauS，
-% 并以 ACC 最大作为最优参数组合选择标准。脚本支持直接切换到其他 .mat
-% 数据集，并自动解析常见标签变量名（如 Y、y、label、gt），不会修改数据集。
+% 默认对 dataset/MFeat_2Views.mat 数据集搜索 beta、lambda、rho 和 tauS，
+% 并以 ACC 最大作为最优参数组合选择标准。脚本沿用当前项目的自动标签解析、
+% 重复实验和详细日志输出风格，便于直接复现实验并进一步做局部细化搜索。
 %
 % 输入参数说明：
-% 本脚本无函数输入。请直接修改“用户可配置参数”区域中的数据集名、搜索网格、
+% 本脚本无函数输入。请直接修改“用户可配置参数”区域中的搜索网格、
 % 随机种子和重复次数。
 %
 % 输出参数说明：
@@ -22,7 +22,7 @@
 %
 % 注意事项：
 % 1. 该脚本默认启用 3.Y Quality-and-Alignment Aware Weighted Anchor Fusion。
-% 2. 单次搜索耗时包含 Neighbor、algo_qp 和聚类评价的总耗时。
+% 2. 默认搜索网格以 demo.m 中 beta=100、lambda=1e4 为中心做首轮粗搜索。
 % 3. 每次搜索都会输出每个视图的质量分数、对齐残差、联合得分和融合权重。
 %
 % See also algo_qp, aligned, Neighbor, myNMIACCwithmean
@@ -32,13 +32,12 @@ clc;
 warning off;
 
 %% 用户可配置参数
-datasetFile = 'Reuters-1200.mat';
-% 第二轮局部细化：保持目标视图优势，同时适度抬高其他视图的参与度。
-% 调参重点放在减弱“零对齐残差 + 较小温度”带来的权重极化风险。
-betaList = [137, 138, 139, 140];
-lambdaList = [ 12000, 14000];
-rhoList = [ 0.34, 0.345, 0.35];
-tauSList = [1.2, 1.225, 1.25, 1.275];
+datasetFile = 'MFeat_2Views.mat';
+% 以 demo.m 的默认参数为中心做首轮粗搜索，便于后续围绕最优点继续细化。
+betaList = [80, 100, 120];
+lambdaList = [5e3, 1e4, 2e4];
+rhoList = [0.3, 0.5, 0.7];
+tauSList = [0.5, 1, 2];
 epsilonValue = 1e-8;
 repeatNum = 2;
 baseSeed = 1;
